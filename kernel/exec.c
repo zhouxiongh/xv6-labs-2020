@@ -117,9 +117,12 @@ exec(char *path, char **argv)
   proc_freepagetable(oldpagetable, oldsz);
 
   // Insert if(p->pid==1) vmprint(p->pagetable) in exec.c just before the return argc
-  if (p->pid == 1) {
+  #ifdef SOL_PGTBL
+  if(p->pid == 1) {
     vmprint(p->pagetable);
   }
+  kvmmapuser(p->pid, p->kpagetable, p->pagetable, p->sz, 0);
+  #endif
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 

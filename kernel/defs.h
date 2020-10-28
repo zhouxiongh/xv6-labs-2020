@@ -160,10 +160,11 @@ int             uartgetc(void);
 
 // vm.c
 void            kvminit(void);
-pagetable_t     makekpagetable(void);
+pagetable_t     kvminit1(void);
 void            kvminithart(void);
 uint64          kvmpa(uint64);
 void            kvmmap(uint64, uint64, uint64, int);
+void            kvmmap1(pagetable_t, uint64, uint64, uint64, int);
 void            kvmunmap(uint64 va, uint64 npages, int do_free);
 void            kvmfree(pagetable_t);
 int             mappages(pagetable_t, uint64, uint64, uint64, int);
@@ -183,6 +184,9 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            vmprint(pagetable_t);
+#ifdef SOL_PGTBL
+void            kvmmapuser(int pid, pagetable_t kpagetable, pagetable_t upagetable, uint64 newsz, uint64 oldsz);
+#endif
 
 // plic.c
 void            plicinit(void);

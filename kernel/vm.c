@@ -48,13 +48,17 @@ kvminit()
 }
 
 /*
- * create a direct-map page table for the process.
+ * create a kernel page table for the process.
  */
 pagetable_t
-makekpagetable(void)
+kvminit1(void)
 {
   pagetable_t pagetable = (pagetable_t) kalloc();
   memset(pagetable, 0, PGSIZE);
+
+  for (int i = 1; i < 512; ++i) {
+    pagetable[i] = kernel_pagetable[i];
+  }
 
   // uart registers
   mappages(pagetable, UART0, PGSIZE, UART0, PTE_R | PTE_W);
@@ -67,16 +71,6 @@ makekpagetable(void)
 
   // PLIC
   mappages(pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
-
-  // map kernel text executable and read-only.
-  mappages(pagetable, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X);
-
-  // map kernel data and the physical RAM we'll make use of.
-  mappages(pagetable, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W);
-
-  // map the trampoline for trap entry/exit to
-  // the highest virtual address in the kernel.
-  mappages(pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X);
 
   return pagetable;
 }
@@ -152,6 +146,13 @@ void
 kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 {
   if(mappages(kernel_pagetable, va, sz, pa, perm) != 0)
+    panic("kvmmap");
+}
+
+void
+kvmmap1(pagetable_t pagetable,uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
     panic("kvmmap");
 }
 
@@ -441,6 +442,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  #ifdef SOL_PGTBL
+  return copyin_new(pagetable, dst, srcva, len);
+  #endif
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -458,7 +462,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     srcva = va0 + PGSIZE;
   }
   return 0;
-  // return copyin_new(pagetable, dst, srcva, len);
+
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -468,6 +472,9 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  #ifdef SOL_PGTBL
+  return copyinstr_new(pagetable, dst, srcva, max);
+  #endif
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -502,7 +509,6 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
-  // return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 
@@ -541,5 +547,52 @@ vmprint(pagetable_t pagetable_t1)
 void
 kvmfree(pagetable_t pagetable)
 {
-  kfreewalk(pagetable);
+  // kfreewalk(pagetable);
+  pte_t pte = pagetable[0];
+  pagetable_t level1 =(pagetable_t) PTE2PA(pte);
+
+  for (int i = 0; i < 512; ++i) {
+    pte_t pte = level1[i];
+    if (pte & PTE_V) {
+      uint64 level2 = PTE2PA(pte);
+      kfree((void *) level2);
+      level1[i] = 0;
+    }
+  }
+  kfree((void *) level1);
+  kfree((void *) pagetable);
+} 
+
+#ifdef SOL_PGTBL
+// copy PTEs form user page table into kernel page table.
+void
+kvmmapuser(int pid, pagetable_t kpagetable, pagetable_t upagetable, uint64 newsz, uint64 oldsz)
+{
+  uint64 va;
+  pte_t *upte;
+  pte_t *kpte;
+
+  for (va = oldsz; va < newsz; va += PGSIZE) {
+    upte = walk(upagetable, va, 0);
+    if (upte == 0) {
+      panic("kvmmapuser: no upte");
+    }
+
+    if ((*upte & PTE_V) == 0) {
+      panic("kvmmapuser: no valid upte");
+    }
+
+    kpte = walk(kpagetable, va, 1);
+    if (kpte == 0) {
+      panic("kvmmapuser: no kpte");
+    }
+
+    *kpte = *upte;
+    *kpte &= ~(PTE_U | PTE_W | PTE_X);
+  }
+  for (va = newsz; va < oldsz; va += PGSIZE) {
+    kpte = walk(kpagetable, va, 1);
+    *kpte &= ~PTE_V;
+  }
 }
+#endif

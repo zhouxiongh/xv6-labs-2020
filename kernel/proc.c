@@ -125,25 +125,28 @@ found:
     return 0;
   }
 
+  // Fill in the proc kernel page table
+  p->kpagetable = kvminit1();
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
-  // Fill in the proc kernel page table
-  p->kpagetable = makekpagetable();
 
   // map the kernel stack for each process
+  
 
   // char *pa = kalloc();
   // if(pa == 0)
   //   panic("kalloc");
   // uint64 va = KSTACK((int) (p - proc));
-  mappages(p->kpagetable, p->kstack, PGSIZE, kvmpa(p->kstack), PTE_R | PTE_W);
+  // if(mappages(p->kpagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W) != 0)
+  //   panic("kvmmap");
+  // // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
 
   // p->kstack = va;
-  // p->kpagetable = kernel_pagetable;
 
 
   return p;
@@ -267,6 +270,10 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  #ifdef SOL_PGTBL
+  kvmmapuser(p->pid, p->kpagetable, p->pagetable, p->sz, 0);
+  #endif
+
   release(&p->lock);
 }
 
@@ -286,6 +293,9 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  #ifdef SOL_PGTBL
+  kvmmapuser(p->pid, p->kpagetable, p->pagetable, sz, p->sz);
+  #endif
   p->sz = sz;
   return 0;
 }
@@ -331,6 +341,10 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  #ifdef SOL_PGTBL
+  kvmmapuser(np->pid, np->kpagetable, np->pagetable, np->sz, 0);
+  #endif
 
   release(&np->lock);
 
@@ -483,6 +497,20 @@ wait(uint64 addr)
   }
 }
 
+void 
+kvmswitch(pagetable_t pagetable)
+{
+  w_satp(MAKE_SATP(pagetable));
+  sfence_vma();
+}
+
+void 
+kvmswitch_kernel()
+{
+  w_satp(MAKE_SATP(kernel_pagetable));
+  sfence_vma();
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -511,13 +539,15 @@ scheduler(void)
         p->state = RUNNING;
         c->proc = p;
         // load the process kernel page table into satp reg
-        w_satp(MAKE_SATP(p->kpagetable));
-        sfence_vma();
+        kvmswitch(p->kpagetable);
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+
+        kvmswitch_kernel();
 
         found = 1;
       }
@@ -525,8 +555,6 @@ scheduler(void)
     }
 #if !defined (LAB_FS)
     if(found == 0) {
-      w_satp(MAKE_SATP(kernel_pagetable));
-      sfence_vma();
       intr_on();
       asm volatile("wfi");
     }
