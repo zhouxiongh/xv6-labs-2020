@@ -48,8 +48,15 @@ sys_sbrk(void)
     return -1;
   addr = myproc()->sz;
   myproc()->sz = addr + n;
-  // if(growproc(n) < 0)
-  //   return -1;
+  #ifndef SOL_LAZY
+  if(growproc(n) < 0)
+    return -1;
+  #endif
+  #ifdef SOL_LAZY
+  if (n < 0) {
+    uvmdealloc(myproc()->pagetable, addr, myproc()->sz);
+  }
+  #endif
   return addr;
 }
 
