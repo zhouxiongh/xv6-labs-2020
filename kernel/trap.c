@@ -67,6 +67,12 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 0xf) {
+    if (cowfault(p->pagetable, PGROUNDDOWN(r_stval())) != 0) {
+      printf("usertrap(): scause %p\n", r_scause());
+      p->killed = 1;
+    }
+    // printf("usertrap(): cowfault passed\n");
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -218,3 +224,35 @@ devintr()
   }
 }
 
+int
+cowfault(pagetable_t pagetable, uint64 va)
+{
+  if (va >= MAXVA) {
+    return -1;
+  }
+  uint64 oldpa, newpa;
+  pte_t *pte = walk(pagetable, va, 0);
+  if (pte == 0) {
+    return -1;
+  }
+
+  if ((*pte & PTE_U) == 0 || (*pte & PTE_V) == 0) {
+    return -1;
+  }
+  oldpa = PTE2PA(*pte);
+  // kderef((void *)pa0);
+  newpa = (uint64)kalloc();
+  if (newpa == 0) {
+    printf("cowfault(): kalloc failed\n");
+    return -1;
+  }
+  memmove((void *)newpa, (void *)oldpa, PGSIZE);
+  kfree((void *)oldpa);
+  *pte = PA2PTE(newpa) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_U;
+  // uvmunmap(pagetable, va, 1, 1);
+  // if (mappages(pagetable, va, PGSIZE, newpa, PTE_V | PTE_R | PTE_W | PTE_X | PTE_U) != 0){
+  //   printf("cowfault(): mappages failed\n");
+  //   return -1;
+  // } 
+  return 0;
+}

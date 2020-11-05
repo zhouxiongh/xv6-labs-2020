@@ -16,6 +16,8 @@
 #include "file.h"
 #include "fcntl.h"
 
+int uvmchkaddr(struct proc *p, uint64 addr, uint64 size, int write);
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -75,6 +77,11 @@ sys_read(void)
 
   if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
     return -1;
+  // #ifdef SOL_COW
+  // if (uvmchkaddr(myproc(), p, n, 0) != 0) {
+  //   return -1;
+  // }
+  // #endif
   return fileread(f, p, n);
 }
 
@@ -87,6 +94,11 @@ sys_write(void)
 
   if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
     return -1;
+  // #ifdef SOL_COW
+  // if (uvmchkaddr(myproc(), p, n, 1) != 0) {
+  //   return -1;
+  // }
+  // #endif
 
   return filewrite(f, p, n);
 }
@@ -474,6 +486,9 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  // if (uvmchkaddr(p, fdarray, sizeof(fd0), 1) != 0) {
+  //   return -1;
+  // }
   if(copyout(p->pagetable, fdarray, (char*)&fd0, sizeof(fd0)) < 0 ||
      copyout(p->pagetable, fdarray+sizeof(fd0), (char *)&fd1, sizeof(fd1)) < 0){
     p->ofile[fd0] = 0;
@@ -484,3 +499,49 @@ sys_pipe(void)
   }
   return 0;
 }
+
+// #ifdef SOL_COW
+int uvmchkaddr(struct proc *p, uint64 addr, uint64 size, int write) {
+  pagetable_t pagetable = p->pagetable;
+  pte_t *pte;
+  uint64 a, end;
+
+  if(p->pid > 1) {
+    if(addr >= p->sz) {
+      printf("uvmchkaddr(): page fault: invalid memory access to vaddr %p\n", addr);
+      return -1;
+    }
+  }
+
+  a = PGROUNDDOWN(addr);
+  end = PGROUNDUP(a + size);
+  for(; a < end; a += PGSIZE) {
+    if((pte = walk(pagetable, a, 1)) == 0)
+      panic("uvmchkaddr(): bad pte");
+
+    if(write && (*pte & PTE_C)) {
+      uint64 pa0 = PTE2PA(*pte);
+      char *mem = kalloc();
+      if(mem == 0) {
+        printf("uvmchkaddr(): no more physical page found, exit due to OOM\n");
+        return -1;
+      }
+      memmove(mem, (void *)pa0, PGSIZE);
+      uint flags = PTE_FLAGS(*pte);
+      uint newflags = flags & (~PTE_C);
+      newflags |= PTE_W;
+
+      uvmunmap(pagetable, a, PGSIZE, 0);
+      kderef((void *)pa0);
+      if(mappages(pagetable, a, PGSIZE, (uint64)mem, newflags) != 0) {
+        panic("uvmchkaddr(): cannot map page\n");
+      }
+    } else {
+      if(!((*pte & PTE_U) && (*pte & PTE_V)))
+        return -1;
+    }
+  }
+
+  return 0;
+}
+// #endif
