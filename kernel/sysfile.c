@@ -294,9 +294,7 @@ sys_open(void)
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
     return -1;
-
   begin_op();
-
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
@@ -314,6 +312,38 @@ sys_open(void)
       end_op();
       return -1;
     }
+  }
+
+  // recursively follow it until a non-link file is reached
+  // printf("open: symlink file: %d\n", omode & O_NOFOLLOW);
+  int cnt = 0;
+  if(!(omode & O_NOFOLLOW)) {
+    // printf("open: symlink file\n");
+    while (ip->type == T_SYMLINK && cnt <= 10) {
+      // readi();
+      cnt++;
+      int len = 0;
+      readi(ip, 0, (uint64)&len, 0, sizeof(int));
+      if (len > MAXPATH) {
+        panic("open: corrupted symlink inode");
+      }
+      char target[MAXPATH];
+      readi(ip, 0, (uint64)target, sizeof(int), len + 1);
+       (ip);
+      if ((ip = namei(target)) == 0) {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+    }
+  }
+
+  // If the links form a cycle, you must return an error code. You may approximate this by returning an error code if the depth of links reaches some threshold such as 10
+  if (cnt >= 10) {
+    printf("open: links form a cycle!!\n");
+    iunlockput(ip);
+    end_op();
+    return -1;
   }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
@@ -482,5 +512,47 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+// working in progress
+uint64
+sys_symlink(void)
+{
+  char path[MAXPATH],target[MAXPATH];
+  struct inode *ip;
+  struct file * f;
+  int n, fd;
+  if((n = argstr(0, target, MAXPATH)) < 0 || (n = argstr(1, path, MAXPATH)) < 0)
+    return -1;
+  
+  begin_op();
+  if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+  // ilock(ip);
+  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+    if(f)
+      fileclose(f);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  f->type = FD_INODE;
+  f->off = 0;
+  f->ip = ip;
+  f->readable = 0;
+  f->writable = 0;
+
+  int len = strlen(target);
+  // ilock(ip);
+  writei(ip, 0, (uint64)&len, 0, sizeof(int));
+  writei(ip, 0, (uint64)target, sizeof(int), len + 1);
+  iupdate(ip);
+  iunlockput(ip);
+  end_op();
+  
   return 0;
 }
