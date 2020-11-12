@@ -484,3 +484,30 @@ sys_pipe(void)
   }
   return 0;
 }
+
+#define VMA_SZ 16
+struct {
+  struct file f;
+  uint64 addr;
+  uint len;
+  int port;
+} vma[VMA_SZ];
+
+uint64 
+sys_mmap(void)
+{
+  uint64 addr;
+  int length, port, flags, fd, offset;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argaddr(2, &port) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+    return -1;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  if (argaddr(0, &addr) < 0 || argint(1, &len) < 0)
+    return -1;
+  return -1;
+}
