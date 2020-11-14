@@ -11,3 +11,7 @@
 #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
 #define FSSIZE       1000  // size of file system in blocks
 #define MAXPATH      128   // maximum file path name
+#define MMAP_NUM     32
+#define MMAP_SIZE    (1L << 20)
+#define MMAP_START   (1L << 37)   // start address of mmap
+#define MMAP_END     (MMAP_START + MMAP_NUM * MMAP_SIZE)   // end address of mmap

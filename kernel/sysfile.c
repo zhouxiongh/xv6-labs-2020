@@ -485,29 +485,103 @@ sys_pipe(void)
   return 0;
 }
 
-#define VMA_SZ 16
-struct {
-  struct file f;
-  uint64 addr;
-  uint len;
-  int port;
-} vma[VMA_SZ];
+
+struct map_info *
+map_alloc(void)
+{
+  struct proc *p = myproc();
+  for (int i = 0; i < MMAP_NUM; i++) {
+    if (!p->map[i].used) {
+      p->map[i].vstart = MMAP_START + MMAP_SIZE * i;
+      return &p->map[i];
+    }
+  }
+  return 0;
+}
 
 uint64 
 sys_mmap(void)
 {
+  struct proc *p = myproc();
   uint64 addr;
-  int length, port, flags, fd, offset;
-  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argaddr(2, &port) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+  int length, prot, flags, fd, offset;
+  if(argaddr(0, &addr) < 0)
     return -1;
+  
+  if(argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0
+    || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+    return -1;
+
+  // printf("mmap: fd = %d, flags = %d, offset = %d, prot = %d\n", fd, flags,offset, prot);
+  if(addr != 0 || offset != 0)
+    return -1;
+
+  if(p->ofile[fd] == 0 || p->ofile[fd]->type != FD_INODE)
+    return -1;
+
+  struct file *f = p->ofile[fd];
+  if((flags & MAP_SHARED) && (prot & PROT_WRITE) && !f->writable)
+    return -1;
+
+  struct map_info *map;
+  if ((map = map_alloc())==0 ) {
+    return -1;
+  }
+  // printf("mmap: map->vstart = %d\n", map->vstart);
+  map->vend = PGROUNDUP(map->vstart + length);
+  map->len = length;
+  map->prot = prot;
+  map->flags = flags;
+  // struct file *f = p->ofile[fd];
+  map->file = f;
+  map->offset = offset;
+  map->used = 1;
+  filedup(map->file);
+  return map->vstart;
 }
 
 uint64
 sys_munmap(void)
 {
+  struct proc *p = myproc();
   uint64 addr;
-  int len;
-  if (argaddr(0, &addr) < 0 || argint(1, &len) < 0)
+  int length;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0)
     return -1;
-  return -1;
+  
+  if(addr < MMAP_START || addr > MMAP_END)
+    return -1;
+  uint64 vpage_base = PGROUNDDOWN(addr);
+  int map_sel = (vpage_base - MMAP_START) / MMAP_SIZE;
+  struct map_info *map = &p->map[map_sel];
+
+  if(map->used == 0)
+    return -1;
+  
+  static pte_t *pte;
+  uint64 pa;
+  for(uint64 va = vpage_base; va < addr + length; va += PGSIZE) {
+    if((pte = walk(p->pagetable, va, 0)) && (*pte & PTE_V)) {
+      pa = PTE2PA(*pte);
+      if((map->flags & MAP_SHARED) && (*pte & PTE_D)) { // dirty page
+        // printf("dirty!\n");
+        uint64 file_start = va - vpage_base;
+        uint64 write_length = PGSIZE;
+        if(write_length > map->len - file_start)
+          write_length = map->len - file_start;
+        struct file *f = map->file;
+
+        begin_op();
+        ilock(f->ip);
+        writei(f->ip, 0, pa, file_start, write_length);
+        // printf("%d bytes wrote, start = %d, length = %d\n", p, file_start, write_length);
+        iunlock(f->ip);
+        end_op();
+      }
+      uvmunmap(p->pagetable, va, 1, 0);
+      kfree((void*)pa);
+    }
+  }
+    
+  return 0;
 }

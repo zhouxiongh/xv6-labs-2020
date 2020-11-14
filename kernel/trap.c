@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -69,22 +73,46 @@ usertrap(void)
     // ok
   } else if (r_scause() == 13 || r_scause() == 15) {
     // lazy alloction
-    if (r_stval() >= p->sz) {
+    uint64 fault_vaddr = r_stval();
+    // printf("usertrap: handle page fault\n);  
+    if (MMAP_START <= fault_vaddr && fault_vaddr < MMAP_END) {
+
+    uint64 fault_vaddr_base = PGROUNDDOWN(fault_vaddr);
+    int map_sel = (fault_vaddr_base - MMAP_START) / MMAP_SIZE;
+    struct map_info * map = &p->map[map_sel];
+    if(map->used == 0 || fault_vaddr >= map->vend) {
+      printf("usertrap(): segfault pid=%d epc=%p\n", p->pid, r_sepc());
       p->killed = 1;
     }
 
+    uint64 map_start = map->vstart;
+    uint64 file_start = fault_vaddr_base - map_start;
+    uint64 read_length = PGSIZE;
+    if(read_length > map->len - file_start)
+      read_length = map->len - file_start;
+
+    // printf("usertrap: file_start = %lld, read_length = %lld\n", file_start, read_length);
     char *mem;
-    uint64 a = PGROUNDDOWN(r_stval());
     mem = kalloc();
     if(mem == 0){
-      // panic("usertrap: kalloc error");
+      panic("usertrap: kalloc error");
       p->killed = 1;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(p->pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
-      // panic("usertrap: mappage error");
+    struct file *f = map->file;
+    ilock(f->ip);
+    readi(f->ip, 0, (uint64)mem, file_start, read_length);
+    iunlock(f->ip);
+    int prot = ((map->prot & PROT_READ) ? PTE_R : 0) | ((map->prot & PROT_WRITE) ? PTE_W : 0);
+    if(mappages(p->pagetable, fault_vaddr_base, PGSIZE, (uint64)mem, prot|PTE_U) != 0){
+      panic("usertrap: mappage error");
       kfree(mem);
       p->killed = 1;
+    }
+    } else {
+    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    p->killed = 1;
     }
 
   } else {

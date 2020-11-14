@@ -95,6 +95,7 @@ mmap_test(void)
     err("open");
 
   printf("test mmap f\n");
+  printf("mmaptest: fd = %d\n", fd);
   //
   // this call to mmap() asks the kernel to map the content
   // of open file fd into the address space. the first
